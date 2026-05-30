@@ -110,11 +110,66 @@ function posixJoin(...parts) {
 /** Map of attachmentUniqueName → ArrayBuffer (populated during export) */
 const attachmentBuffers = {};
 
+/** Fetch a Workflowy file-proxy URL from inside the WF tab. */
+async function downloadAttachmentViaTab(tabId, url) {
+  const [{ result } = {}] = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "MAIN",
+    func: async (fetchUrl) => {
+      function bufToB64(buf) {
+        const bytes = new Uint8Array(buf);
+        let b64 = "";
+        for (let i = 0; i < bytes.length; i += 8192) {
+          b64 += String.fromCharCode(...bytes.subarray(i, i + 8192));
+        }
+        return btoa(b64);
+      }
+
+      // 1. Try fetch (standard, with cookies)
+      try {
+        const res = await fetch(fetchUrl, { credentials: "include" });
+        if (res.ok) return { ok: true, b64: bufToB64(await res.arrayBuffer()) };
+      } catch (_) {}
+
+      // 2. img + canvas fallback — browser loads images without CORS checks;
+      //    works even when the proxy redirects to a signed S3 URL.
+      return new Promise((resolve) => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement("canvas");
+          canvas.width = img.naturalWidth;
+          canvas.height = img.naturalHeight;
+          canvas.getContext("2d").drawImage(img, 0, 0);
+          try {
+            const dataUrl = canvas.toDataURL("image/png");
+            resolve({ ok: true, b64: dataUrl.split(",")[1], forceExt: ".png" });
+          } catch (e) {
+            resolve({ ok: false, status: "canvas tainted: " + e.message });
+          }
+        };
+        img.onerror = () => resolve({ ok: false, status: "img load failed" });
+        // No crossOrigin attribute — lets browser load without triggering CORS
+        img.src = fetchUrl;
+      });
+    },
+    args: [url],
+  });
+
+  if (!result || !result.ok) {
+    throw new Error(result ? result.status : "no result from tab");
+  }
+  const binary = atob(result.b64);
+  const buf = new ArrayBuffer(binary.length);
+  const view = new Uint8Array(buf);
+  for (let i = 0; i < binary.length; i++) view[i] = binary.charCodeAt(i);
+  return { buf, forceExt: result.forceExt || null };
+}
+
+let _activeTabId = null;
+
 async function downloadAttachment(url) {
   try {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.arrayBuffer();
+    return await downloadAttachmentViaTab(_activeTabId, url);
   } catch (e) {
     Logger.error(`Download failed: ${e.message} — ${url}`);
     return null;
@@ -132,6 +187,7 @@ async function downloadAttachment(url) {
 async function handleAttachment(node, label, nodeId, shouldDownload) {
   const meta = node.file;
   if (!meta) return `<!-- missing file metadata on "${label}" -->`;
+  Logger.debug(`Attachment: "${label.slice(0,40)}" → ${(meta.url || "no url").slice(0, 80)}`);
 
   const ext = meta.fileName
     ? "." + meta.fileName.split(".").pop()
@@ -161,10 +217,15 @@ async function handleAttachment(node, label, nodeId, shouldDownload) {
   }
 
   Logger.info(`↓ Downloading: ${uniqueName}`);
-  const buf = await downloadAttachment(url);
-  if (buf) {
-    attachmentBuffers[uniqueName] = buf;
-    return `![[attachments/${uniqueName}]]`;
+  const result = await downloadAttachment(url);
+  if (result) {
+    // Canvas fallback always produces PNG; rename if the extension changed
+    let finalName = uniqueName;
+    if (result.forceExt && !uniqueName.endsWith(result.forceExt)) {
+      finalName = uniqueName.replace(/\.[^.]+$/, result.forceExt);
+    }
+    attachmentBuffers[finalName] = result.buf;
+    return `![[attachments/${finalName}]]`;
   }
   return `<!-- download failed: ${baseName} -->`;
 }
@@ -248,8 +309,9 @@ async function renderNode(list, depth, lines, config) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function findNodeById(items, id) {
+  const needle = (id || "").replace(/-/g, "").toLowerCase();
   for (const item of items) {
-    if (item.id === id) return item;
+    if ((item.id || "").replace(/-/g, "").toLowerCase() === needle) return item;
     if (item.items && item.items.length) {
       const found = findNodeById(item.items, id);
       if (found) return found;
@@ -365,7 +427,7 @@ async function exportAllAsFiles(items, zip, parentPath, config) {
  * We use the WF global that WorkFlowy exposes, falling back to the raw
  * PROJECT_TREE / INIT_DATA if the newer API isn't available.
  */
-function extractWorkflowyData() {
+function extractWorkflowyData(targetNodeId) {
   function serializeNode(node) {
     const data = node.getProjectData ? node.getProjectData() : node;
     const id = (node.getProjectId ? node.getProjectId() : data.id || data.projectid || "").replace(/^root-/, "");
@@ -379,10 +441,40 @@ function extractWorkflowyData() {
     // layout / source
     const layoutMode = data.metadata && data.metadata.layoutMode ? data.metadata.layoutMode : undefined;
 
-    // file attachment
+    // file attachment — metadata lives at node.data.metadata.s3File
     let file = null;
     let hasFile = false;
-    if (data.metadata && data.metadata.fileInfo) {
+    const innerMeta = ((node.data || {}).metadata) || {};
+
+    if (innerMeta.s3File) {
+      hasFile = true;
+      const fi = innerMeta.s3File;
+
+      // WF renders file nodes with <a href="https://workflowy.com/file-proxy/file/FRESH_TOKEN/">
+      // in the DOM. This token is authenticated and works; the raw objectFolder is not.
+      let domUrl = null;
+      const allAnchors = [...document.querySelectorAll("a[href*='file-proxy']")];
+      if (allAnchors.length) {
+        let best = null;
+        if (id) {
+          const nodeEl = document.querySelector(`[data-id="${id}"], [data-projectid="${id}"]`);
+          if (nodeEl) best = nodeEl.querySelector("a[href*='file-proxy']");
+        }
+        domUrl = (best || allAnchors[0]).href;
+      }
+      if (!domUrl) {
+        const img = document.querySelector("img[src*='file-proxy'], img[src^='blob:'], img[src^='data:']");
+        if (img) domUrl = img.src;
+      }
+
+      file = {
+        fileName: fi.fileName || null,
+        fileType: fi.fileType || null,
+        url: domUrl
+          || (fi.url || null)
+          || (fi.objectFolder ? `https://workflowy.com/file-proxy/file/${fi.objectFolder}/` : null),
+      };
+    } else if (data.metadata && data.metadata.fileInfo) {
       hasFile = true;
       const fi = data.metadata.fileInfo;
       file = {
@@ -408,7 +500,16 @@ function extractWorkflowyData() {
   }
 
   try {
-    // Modern WF API
+    // If a specific node ID was requested, try fetching it directly first
+    if (targetNodeId && typeof WF !== "undefined" && WF.getItemById) {
+      const stripped = targetNodeId.replace(/-/g, "");
+      const node = WF.getItemById(targetNodeId) || WF.getItemById(stripped);
+      if (node) {
+        return { ok: true, items: [serializeNode(node)], directNode: true };
+      }
+    }
+
+    // Modern WF API — full tree
     if (typeof WF !== "undefined" && WF.rootItem) {
       const root = WF.rootItem();
       const children = root.getChildren ? root.getChildren() : [];
@@ -430,11 +531,12 @@ function extractWorkflowyData() {
   }
 }
 
-async function getWorkflowyItems(tabId) {
+async function getWorkflowyItems(tabId, nodeId) {
   const [{ result } = {}] = await chrome.scripting.executeScript({
     target: { tabId },
     world: "MAIN",
     func: extractWorkflowyData,
+    args: [nodeId || null],
   });
   return result || { ok: false, error: "No result from page script" };
 }
@@ -533,10 +635,11 @@ async function runExport() {
       return;
     }
 
+    _activeTabId = tab.id;
     setStatus("Extracting outline from Workflowy…");
     Logger.info("Extracting outline from Workflowy…");
 
-    const result = await getWorkflowyItems(tab.id);
+    const result = await getWorkflowyItems(tab.id, rootNodeId);
     if (!result.ok) {
       setStatus(`Could not read outline: ${result.error}`, "error");
       Logger.error(result.error);
@@ -551,7 +654,13 @@ async function runExport() {
 
     if (rootNodeId) {
       Logger.info(`Looking for root node: ${rootNodeId}`);
-      const rootNode = findNodeById(allItems, rootNodeId);
+      let rootNode;
+      if (result.directNode) {
+        rootNode = allItems[0];
+        Logger.info(`Found node directly via WF API`);
+      } else {
+        rootNode = findNodeById(allItems, rootNodeId);
+      }
       if (!rootNode) {
         setStatus(`Root node "${rootNodeId}" not found in outline.`, "error");
         Logger.error(`Node not found: ${rootNodeId}`);
