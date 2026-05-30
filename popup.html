@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Workflowy to Obsidian</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <h1>Workflowy → Obsidian</h1>
+
+    <section class="section">
+      <label class="label" for="split-strategy">Export strategy</label>
+      <select id="split-strategy">
+        <option value="children">One file per child node (root-scoped)</option>
+        <option value="top-level">One file per top-level node</option>
+        <option value="single">Single combined file</option>
+        <option value="all">All nodes as nested files</option>
+      </select>
+    </section>
+
+    <section class="section">
+      <label class="label" for="root-node-id">Root node ID or URL <span class="optional">(optional)</span></label>
+      <input id="root-node-id" type="text" placeholder="Leave blank to export full outline" spellcheck="false" />
+      <button id="use-current" type="button" class="secondary">Use current page node</button>
+    </section>
+
+    <section class="section row">
+      <label class="label checkbox-label">
+        <input id="skip-completed" type="checkbox" />
+        Skip completed/archived nodes
+      </label>
+    </section>
+
+    <section class="section row">
+      <label class="label checkbox-label">
+        <input id="download-attachments" type="checkbox" checked />
+        Download attachments (images/files)
+      </label>
+    </section>
+
+    <div id="status-bar" class="status-bar hidden"></div>
+
+    <div class="actions">
+      <button id="export-button" type="button" class="primary" disabled>Export to ZIP</button>
+    </div>
+
+    <div id="log-container" class="log-container hidden">
+      <pre id="log-output"></pre>
+    </div>
+
+    <script src="jszip.min.js"></script>
+    <script src="popup.js"></script>
+  </body>
+</html>

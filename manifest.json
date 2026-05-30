@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "Workflowy to Obsidian",
+  "version": "1.0.0",
+  "description": "Export your Workflowy outline to Obsidian-ready Markdown files.",
+  "permissions": ["tabs", "scripting", "storage"],
+  "host_permissions": [
+    "https://workflowy.com/*",
+    "https://www.workflowy.com/*"
+  ],
+  "action": {
+    "default_title": "Workflowy to Obsidian",
+    "default_popup": "popup.html"
+  }
+}
