@@ -2,6 +2,7 @@
 // UI references
 // ─────────────────────────────────────────────────────────────────────────────
 const downloadAttachEl = document.getElementById("download-attachments");
+const useH2El          = document.getElementById("use-h2-headings");
 const exportBtn        = document.getElementById("export-button");
 const statusBar        = document.getElementById("status-bar");
 const logContainer     = document.getElementById("log-container");
@@ -419,7 +420,7 @@ async function renderNode(list, depth, lines, config) {
       const noteLines = note.split("\n");
       lines.push(`> ${noteLines.join("\n> ")}\n`);
     }
-  } else if (depth === 1) {
+  } else if (depth === 1 && config.useH2Headings) {
     if (isImageOnly) {
       lines.push(""); // placeholder replaced by embed below
     } else {
@@ -433,8 +434,8 @@ async function renderNode(list, depth, lines, config) {
       }
     }
   } else {
-    // depth >= 2: bullet list, indented relative to the H2 level
-    const indent = "    ".repeat(depth - 2);
+    // depth >= 2 (or depth === 1 with H2 headings off): bullet list
+    const indent = "    ".repeat(Math.max(0, depth - 2));
     const bullet = `${indent}- `;
     if (isImageOnly) {
       lines.push(`${bullet}<!-- image placeholder -->`);
@@ -514,6 +515,7 @@ async function runExport() {
 
     const config = {
       downloadAttachments: downloadAttachEl.checked,
+      useH2Headings: useH2El.checked,
       signedUrls,
     };
 
@@ -588,11 +590,15 @@ async function runExport() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function init() {
-  const saved = await chrome.storage.local.get(["downloadAttachments"]);
+  const saved = await chrome.storage.local.get(["downloadAttachments", "useH2Headings"]);
   if (saved.downloadAttachments != null) downloadAttachEl.checked = saved.downloadAttachments;
+  if (saved.useH2Headings != null) useH2El.checked = saved.useH2Headings;
 
   downloadAttachEl.addEventListener("change", () => {
     chrome.storage.local.set({ downloadAttachments: downloadAttachEl.checked });
+  });
+  useH2El.addEventListener("change", () => {
+    chrome.storage.local.set({ useH2Headings: useH2El.checked });
   });
 
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
