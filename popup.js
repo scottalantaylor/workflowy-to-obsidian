@@ -1,9 +1,6 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // UI references
 // ─────────────────────────────────────────────────────────────────────────────
-const rootNodeIdEl       = document.getElementById("root-node-id");
-const useCurrentBtn      = document.getElementById("use-current");
-const skipCompletedEl    = document.getElementById("skip-completed");
 const downloadAttachEl   = document.getElementById("download-attachments");
 const exportBtn          = document.getElementById("export-button");
 const statusBar          = document.getElementById("status-bar");
@@ -234,7 +231,6 @@ async function handleAttachment(node, label, nodeId, shouldDownload) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function renderNode(list, depth, lines, config) {
-  if (config.skipCompleted && list.isCompleted) return;
 
   const layoutMode = list.source && list.source.layoutMode;
   const name = wfHtmlToMd(list.name);
@@ -327,10 +323,17 @@ function findNodeById(items, id) {
  * We use the WF global that WorkFlowy exposes, falling back to the raw
  * PROJECT_TREE / INIT_DATA if the newer API isn't available.
  */
-function extractWorkflowyData(targetNodeId) {
-  // WF renders file nodes as <img src="https://workflowy.com/file-proxy/file/FRESH_TOKEN">.
-  // Collect these in DOM order — each file node pops the next one during serialisation.
-  const fileProxyUrls = [...document.querySelectorAll("img[src*='file-proxy']")].map(i => i.src);
+function extractWorkflowyData(targetNodeId, fileProxyHashMap, fileProxyOrderedList) {
+  // fileProxyHashMap: { wfShortHash -> freshImgSrc } — accurate per-node match.
+  // fileProxyOrderedList: fallback ordered list when hash match fails.
+  const hashMap = fileProxyHashMap || {};
+  const fallbackQueue = [...(fileProxyOrderedList || [])];
+  // If nothing was passed (e.g. extension not yet reloaded), grab what's in DOM now.
+  if (!fallbackQueue.length) {
+    for (const img of document.querySelectorAll("img[src*='file-proxy']")) {
+      fallbackQueue.push(img.src);
+    }
+  }
 
   function serializeNode(node) {
     const data = node.getProjectData ? node.getProjectData() : node;
@@ -354,9 +357,17 @@ function extractWorkflowyData(targetNodeId) {
       hasFile = true;
       const fi = innerMeta.s3File;
 
-      // WF renders file nodes as <img src="fresh-token-url"> in the DOM.
-      // Pop the next URL from the pre-collected queue (DOM order matches outline order).
-      const domUrl = fileProxyUrls.shift() || null;
+      // 1. Try hash-map lookup: most accurate, avoids ordering issues.
+      let domUrl = null;
+      if (id && typeof WF !== "undefined" && WF.getItemById) {
+        const wfNode = WF.getItemById(id) || WF.getItemById(id.replace(/-/g, ""));
+        if (wfNode && wfNode.getUrl) {
+          const shortHash = (wfNode.getUrl() || "").replace("/#/", "");
+          if (shortHash && hashMap[shortHash]) domUrl = hashMap[shortHash];
+        }
+      }
+      // 2. Fall back to ordered list if hash lookup failed.
+      if (!domUrl) domUrl = fallbackQueue.shift() || null;
 
       file = {
         fileName: fi.fileName || null,
@@ -422,39 +433,90 @@ function extractWorkflowyData(targetNodeId) {
   }
 }
 
-/** Collect fresh file-proxy URLs from the SW cache (keyed by objectFolder substring). */
-async function getFileProxyUrlsFromCache(tabId) {
+/**
+ * Scroll through the WF content, collecting fresh file-proxy img URLs at each
+ * position before the virtual list can un-render them.
+ *
+ * We build a Map of { wfShortHash -> imgSrc } so each URL is matched to the
+ * specific node it belongs to, avoiding ordering/scope mismatches. A fallback
+ * ordered list is also returned for nodes whose hash can't be found in the DOM.
+ */
+async function collectFileProxyUrlsByScrolling(tabId) {
   const [{ result } = {}] = await chrome.scripting.executeScript({
     target: { tabId },
     world: "MAIN",
     func: async () => {
-      try {
-        const names = await caches.keys();
-        const urls = [];
-        for (const name of names) {
-          const cache = await caches.open(name);
-          const reqs = await cache.keys();
-          for (const req of reqs) {
-            if (req.url.includes("file-proxy")) urls.push(req.url);
+      // Find the tallest overflow-scroll container (WF's virtual list).
+      function findScroller() {
+        let best = null, bestH = 0;
+        for (const el of document.querySelectorAll("*")) {
+          const s = getComputedStyle(el);
+          if ((s.overflowY === "scroll" || s.overflowY === "auto") &&
+              el.scrollHeight > el.clientHeight + 50 &&
+              el.scrollHeight > bestH) {
+            best = el; bestH = el.scrollHeight;
           }
         }
-        return urls;
-      } catch (e) {
-        return [];
+        return best || document.documentElement;
       }
+
+      // Try to find the WF node hash associated with a given img element.
+      // WF nodes each have a short hash visible in their zoom URL (/#/abcdef012345).
+      // We look for an ancestor element that has such a hash in its ID or a sibling
+      // anchor with an href matching the /#/ pattern.
+      function getNodeHash(img) {
+        let el = img.parentElement;
+        while (el && el !== document.body) {
+          // Check the element's own id
+          if (el.id && /^[a-f0-9]{12}$/.test(el.id)) return el.id;
+          // Check for an anchor linking to a node
+          const a = el.querySelector('a[href^="/#/"]');
+          if (a) {
+            const hash = a.getAttribute("href").replace("/#/", "");
+            if (/^[a-f0-9]{12}$/.test(hash)) return hash;
+          }
+          el = el.parentElement;
+        }
+        return null;
+      }
+
+      const scroller = findScroller();
+      const orig = scroller.scrollTop;
+      const total = scroller.scrollHeight;
+      // Small step so every img passes through the viewport.
+      const step = 150;
+      const hashMap = {};   // shortHash → imgSrc
+      const orderedList = []; // insertion-order list (fallback)
+      const seenSrcs = new Set();
+
+      for (let pos = 0; pos < total; pos += step) {
+        scroller.scrollTop = pos;
+        await new Promise(r => setTimeout(r, 200));
+        for (const img of document.querySelectorAll("img[src*='file-proxy']")) {
+          if (seenSrcs.has(img.src)) continue;
+          seenSrcs.add(img.src);
+          orderedList.push(img.src);
+          const hash = getNodeHash(img);
+          if (hash) hashMap[hash] = img.src;
+        }
+      }
+
+      scroller.scrollTop = orig;
+      return { hashMap, orderedList };
     },
     args: [],
   });
-  return result || [];
+  return result || { hashMap: {}, orderedList: [] };
 }
 
-
 async function getWorkflowyItems(tabId, nodeId) {
+  const { hashMap, orderedList } = await collectFileProxyUrlsByScrolling(tabId);
+  Logger.debug(`Collected ${orderedList.length} fresh file-proxy URL(s) (${Object.keys(hashMap).length} matched to nodes)`);
   const [{ result } = {}] = await chrome.scripting.executeScript({
     target: { tabId },
     world: "MAIN",
     func: extractWorkflowyData,
-    args: [nodeId || null],
+    args: [nodeId || null, hashMap, orderedList],
   });
   return result || { ok: false, error: "No result from page script" };
 }
@@ -508,22 +570,6 @@ async function getCurrentNodeId(tabId) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ── NODE ID NORMALISATION (from workflowy-to-obsidian.js) ─────────────────────
-// ─────────────────────────────────────────────────────────────────────────────
-
-function normalizeRootNodeId(input) {
-  const trimmed = (input || "").trim();
-  if (!trimmed) return null;
-  const urlMatch = trimmed.match(/(?:workflowy\.com\/(?:#\/)?|workflowy\.com\/s\/[^/]+\/)([a-f0-9-]{36})/i);
-  if (urlMatch) return urlMatch[1];
-  const uuidMatch = trimmed.match(/[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/i);
-  if (uuidMatch) return uuidMatch[0];
-  const hashMatch2 = trimmed.match(/[\/#]([a-zA-Z0-9]{4,})\s*$/);
-  if (hashMatch2) return hashMatch2[1];
-  return trimmed;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // ── MAIN EXPORT ORCHESTRATION ─────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -536,12 +582,8 @@ async function runExport() {
   setStatus("Starting export…");
 
   const config = {
-    skipCompleted:       skipCompletedEl.checked,
     downloadAttachments: downloadAttachEl.checked,
   };
-
-  const rawRootId = rootNodeIdEl.value.trim();
-  const rootNodeId = rawRootId ? normalizeRootNodeId(rawRootId) : null;
 
   try {
     // Get active tab
@@ -553,6 +595,10 @@ async function runExport() {
     }
 
     _activeTabId = tab.id;
+
+    // Always act on the current selected/zoomed node
+    const rootNodeId = await getCurrentNodeId(tab.id);
+
     setStatus("Extracting outline from Workflowy…");
     Logger.info("Extracting outline from Workflowy…");
 
@@ -644,51 +690,23 @@ async function runExport() {
 
 async function init() {
   // Restore saved settings
-  const saved = await chrome.storage.local.get(["skipCompleted", "downloadAttachments", "rootNodeId"]);
-  if (saved.skipCompleted != null)       skipCompletedEl.checked   = saved.skipCompleted;
-  if (saved.downloadAttachments != null) downloadAttachEl.checked  = saved.downloadAttachments;
-  if (saved.rootNodeId)                  rootNodeIdEl.value        = saved.rootNodeId;
+  const saved = await chrome.storage.local.get(["downloadAttachments"]);
+  if (saved.downloadAttachments != null) downloadAttachEl.checked = saved.downloadAttachments;
 
   // Persist settings on change
-  function saveSettings() {
-    chrome.storage.local.set({
-      skipCompleted:       skipCompletedEl.checked,
-      downloadAttachments: downloadAttachEl.checked,
-      rootNodeId:          rootNodeIdEl.value,
-    });
-  }
-  skipCompletedEl.addEventListener("change", saveSettings);
-  downloadAttachEl.addEventListener("change", saveSettings);
-  rootNodeIdEl.addEventListener("input", saveSettings);
+  downloadAttachEl.addEventListener("change", () => {
+    chrome.storage.local.set({ downloadAttachments: downloadAttachEl.checked });
+  });
 
   // Check if we're on a Workflowy tab and enable the button
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (tab && tab.url && tab.url.includes("workflowy.com")) {
     exportBtn.disabled = false;
-    setStatus("Ready. Configure options and click Export.", "info");
+    setStatus("Ready. Click Export to export the current node.", "info");
   } else {
     setStatus("Open a Workflowy tab, then reopen this popup.", "error");
     exportBtn.disabled = true;
-    useCurrentBtn.disabled = true;
   }
-
-  // "Use current page node" button
-  useCurrentBtn.addEventListener("click", async () => {
-    try {
-      const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!activeTab) return;
-      const nodeId = await getCurrentNodeId(activeTab.id);
-      if (nodeId) {
-        rootNodeIdEl.value = nodeId;
-        saveSettings();
-        setStatus(`Node ID loaded: ${nodeId}`, "success");
-      } else {
-        setStatus("No node ID found in current URL — are you zoomed into a node?", "error");
-      }
-    } catch (e) {
-      setStatus("Could not read node ID: " + e.message, "error");
-    }
-  });
 
   exportBtn.addEventListener("click", runExport);
 }

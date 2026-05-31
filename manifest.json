@@ -8,8 +8,14 @@
     "https://workflowy.com/*",
     "https://www.workflowy.com/*"
   ],
+  "icons": {
+    "16": "16.png"
+  },
   "action": {
     "default_title": "Workflowy to Obsidian",
-    "default_popup": "popup.html"
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "16.png"
+    }
   }
 }
