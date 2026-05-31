@@ -1,7 +1,6 @@
 // ─────────────────────────────────────────────────────────────────────────────
 // UI references
 // ─────────────────────────────────────────────────────────────────────────────
-const splitStrategyEl    = document.getElementById("split-strategy");
 const rootNodeIdEl       = document.getElementById("root-node-id");
 const useCurrentBtn      = document.getElementById("use-current");
 const skipCompletedEl    = document.getElementById("skip-completed");
@@ -304,8 +303,7 @@ async function renderNode(list, depth, lines, config) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ── EXPORTERS (ported from lib/exporters.js) ──────────────────────────────────
-//    Instead of writing files, everything goes into a JSZip instance.
+// ── HELPERS ───────────────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
 
 function findNodeById(items, id) {
@@ -320,104 +318,6 @@ function findNodeById(items, id) {
   return null;
 }
 
-/** exportChildrenAsPages — one file per direct child of rootNode */
-async function exportChildrenAsPages(rootNode, zip, baseDir, config) {
-  Logger.info("Exporting one file per child node...");
-  const usedNames = new Map();
-  let fileCount = 0;
-
-  for (const childNode of rootNode.items || []) {
-    if (config.skipCompleted && childNode.isCompleted) continue;
-
-    const rawName = wfHtmlToMd(childNode.name) || "Untitled";
-    let fileName = `${safeName(rawName)}.md`;
-
-    if (usedNames.has(fileName)) {
-      const count = usedNames.get(fileName) + 1;
-      usedNames.set(fileName, count);
-      fileName = `${safeName(rawName)} (${count}).md`;
-    } else {
-      usedNames.set(fileName, 1);
-    }
-
-    Logger.info(`  -> "${rawName.slice(0, 60)}"`);
-    const lines = [];
-    await renderNode(childNode, 0, lines, config);
-    zip.file(posixJoin(baseDir, fileName), lines.join("\n"));
-    fileCount++;
-  }
-
-  Logger.info(`✓ Exported ${fileCount} files`);
-}
-
-/** exportTopLevelFiles — one file per top-level node */
-async function exportTopLevelFiles(items, zip, baseDir, config) {
-  Logger.info(`Exporting ${items.length} top-level nodes as separate files...`);
-  const usedNames = new Map();
-
-  for (const item of items) {
-    if (config.skipCompleted && item.isCompleted) continue;
-
-    const rawName = wfHtmlToMd(item.name) || "Untitled";
-    let fileName = `${safeName(rawName)}.md`;
-
-    if (usedNames.has(fileName)) {
-      const count = usedNames.get(fileName) + 1;
-      usedNames.set(fileName, count);
-      fileName = `${safeName(rawName)} (${count}).md`;
-    } else {
-      usedNames.set(fileName, 1);
-    }
-
-    Logger.info(`  -> "${rawName.slice(0, 60)}"`);
-    const lines = [];
-    await renderNode(item, 0, lines, config);
-    zip.file(posixJoin(baseDir, fileName), lines.join("\n"));
-  }
-
-  Logger.info(`✓ Exported ${usedNames.size} files`);
-}
-
-/** exportSingleFile — one big combined markdown file */
-async function exportSingleFile(items, zip, baseDir, config) {
-  Logger.info("Exporting as single combined file...");
-  const lines = [];
-  for (const item of items) {
-    await renderNode(item, 0, lines, config);
-    lines.push("", "---", "");
-  }
-  zip.file(posixJoin(baseDir, "workflowy-full.md"), lines.join("\n"));
-  Logger.info("✓ workflowy-full.md written");
-}
-
-/** exportAllAsFiles — every node becomes its own file in a nested folder tree */
-async function exportAllAsFiles(items, zip, parentPath, config) {
-  for (const item of items) {
-    if (config.skipCompleted && item.isCompleted) continue;
-
-    const rawName = wfHtmlToMd(item.name) || "Untitled";
-    const folderName = safeName(rawName);
-    const thisPath = parentPath ? posixJoin(parentPath, folderName) : folderName;
-
-    Logger.debug(`  -> ${thisPath}/${folderName}.md`);
-
-    const lines = [];
-    const name = wfHtmlToMd(item.name);
-    const note = wfHtmlToMd(item.note);
-    if (name) lines.push(`# ${name}`);
-    if (note) lines.push(`\n> ${note}\n`);
-    for (const child of item.items || []) {
-      lines.push(`- [[${safeName(wfHtmlToMd(child.name) || "Untitled")}]]`);
-    }
-
-    zip.file(posixJoin(thisPath, `${folderName}.md`), lines.join("\n"));
-
-    if (item.items && item.items.length) {
-      await exportAllAsFiles(item.items, zip, thisPath, config);
-    }
-  }
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // ── WORKFLOWY DATA EXTRACTION (via chrome.scripting) ──────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
@@ -428,6 +328,10 @@ async function exportAllAsFiles(items, zip, parentPath, config) {
  * PROJECT_TREE / INIT_DATA if the newer API isn't available.
  */
 function extractWorkflowyData(targetNodeId) {
+  // WF renders file nodes as <img src="https://workflowy.com/file-proxy/file/FRESH_TOKEN">.
+  // Collect these in DOM order — each file node pops the next one during serialisation.
+  const fileProxyUrls = [...document.querySelectorAll("img[src*='file-proxy']")].map(i => i.src);
+
   function serializeNode(node) {
     const data = node.getProjectData ? node.getProjectData() : node;
     const id = (node.getProjectId ? node.getProjectId() : data.id || data.projectid || "").replace(/^root-/, "");
@@ -450,22 +354,9 @@ function extractWorkflowyData(targetNodeId) {
       hasFile = true;
       const fi = innerMeta.s3File;
 
-      // WF renders file nodes with <a href="https://workflowy.com/file-proxy/file/FRESH_TOKEN/">
-      // in the DOM. This token is authenticated and works; the raw objectFolder is not.
-      let domUrl = null;
-      const allAnchors = [...document.querySelectorAll("a[href*='file-proxy']")];
-      if (allAnchors.length) {
-        let best = null;
-        if (id) {
-          const nodeEl = document.querySelector(`[data-id="${id}"], [data-projectid="${id}"]`);
-          if (nodeEl) best = nodeEl.querySelector("a[href*='file-proxy']");
-        }
-        domUrl = (best || allAnchors[0]).href;
-      }
-      if (!domUrl) {
-        const img = document.querySelector("img[src*='file-proxy'], img[src^='blob:'], img[src^='data:']");
-        if (img) domUrl = img.src;
-      }
+      // WF renders file nodes as <img src="fresh-token-url"> in the DOM.
+      // Pop the next URL from the pre-collected queue (DOM order matches outline order).
+      const domUrl = fileProxyUrls.shift() || null;
 
       file = {
         fileName: fi.fileName || null,
@@ -530,6 +421,33 @@ function extractWorkflowyData(targetNodeId) {
     return { ok: false, error: e.message };
   }
 }
+
+/** Collect fresh file-proxy URLs from the SW cache (keyed by objectFolder substring). */
+async function getFileProxyUrlsFromCache(tabId) {
+  const [{ result } = {}] = await chrome.scripting.executeScript({
+    target: { tabId },
+    world: "MAIN",
+    func: async () => {
+      try {
+        const names = await caches.keys();
+        const urls = [];
+        for (const name of names) {
+          const cache = await caches.open(name);
+          const reqs = await cache.keys();
+          for (const req of reqs) {
+            if (req.url.includes("file-proxy")) urls.push(req.url);
+          }
+        }
+        return urls;
+      } catch (e) {
+        return [];
+      }
+    },
+    args: [],
+  });
+  return result || [];
+}
+
 
 async function getWorkflowyItems(tabId, nodeId) {
   const [{ result } = {}] = await chrome.scripting.executeScript({
@@ -618,7 +536,6 @@ async function runExport() {
   setStatus("Starting export…");
 
   const config = {
-    splitStrategy:       splitStrategyEl.value,
     skipCompleted:       skipCompletedEl.checked,
     downloadAttachments: downloadAttachEl.checked,
   };
@@ -650,71 +567,68 @@ async function runExport() {
     const allItems = result.items;
     Logger.info(`Got ${allItems.length} top-level nodes`);
 
-    const zip = new JSZip();
+    // Determine the root node and filename
+    let nodesToRender;
+    let mdFileName;
 
     if (rootNodeId) {
       Logger.info(`Looking for root node: ${rootNodeId}`);
-      let rootNode;
-      if (result.directNode) {
-        rootNode = allItems[0];
-        Logger.info(`Found node directly via WF API`);
-      } else {
-        rootNode = findNodeById(allItems, rootNodeId);
-      }
+      const rootNode = result.directNode ? allItems[0] : findNodeById(allItems, rootNodeId);
       if (!rootNode) {
         setStatus(`Root node "${rootNodeId}" not found in outline.`, "error");
         Logger.error(`Node not found: ${rootNodeId}`);
         exportBtn.disabled = false;
         return;
       }
-
       const rootNodeName = wfHtmlToMd(rootNode.name) || "Untitled";
       Logger.info(`Scoped to: "${rootNodeName}" (${(rootNode.items || []).length} direct children)`);
       setStatus(`Exporting: "${rootNodeName.slice(0, 40)}"…`);
-
-      const baseDir = safeName(rootNodeName);
-      await exportChildrenAsPages(rootNode, zip, baseDir, config);
-    } else if (config.splitStrategy === "single") {
-      setStatus("Exporting single file…");
-      await exportSingleFile(allItems, zip, "", config);
-    } else if (config.splitStrategy === "all") {
-      setStatus("Exporting all nodes…");
-      await exportAllAsFiles(allItems, zip, "", config);
-    } else if (config.splitStrategy === "children") {
-      // children strategy without a root node — treat whole outline as root
-      setStatus("Exporting top-level nodes as children…");
-      const fakeRoot = { items: allItems };
-      await exportChildrenAsPages(fakeRoot, zip, "", config);
+      nodesToRender = [rootNode];
+      mdFileName = `${safeName(rootNodeName)}.md`;
     } else {
-      setStatus("Exporting top-level nodes…");
-      await exportTopLevelFiles(allItems, zip, "", config);
+      setStatus("Exporting outline…");
+      nodesToRender = allItems;
+      mdFileName = `workflowy-${new Date().toISOString().slice(0, 10)}.md`;
     }
 
-    // Add any downloaded attachments into the ZIP
+    // Render to a single markdown string
+    const lines = [];
+    for (const item of nodesToRender) {
+      await renderNode(item, 0, lines, config);
+    }
+    const mdContent = lines.join("\n");
+
     const attachKeys = Object.keys(attachmentBuffers);
+
+    let blob;
+    let downloadName;
+
     if (attachKeys.length > 0) {
       Logger.info(`Adding ${attachKeys.length} attachment(s) to ZIP…`);
+      const zip = new JSZip();
+      zip.file(mdFileName, mdContent);
       for (const name of attachKeys) {
         zip.file(`attachments/${name}`, attachmentBuffers[name]);
       }
+      setStatus("Generating ZIP…");
+      blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE" });
+      downloadName = mdFileName.replace(/\.md$/, ".zip");
+    } else {
+      blob = new Blob([mdContent], { type: "text/markdown" });
+      downloadName = mdFileName;
     }
-
-    setStatus("Generating ZIP…");
-    Logger.info("Generating ZIP…");
-    const blob = await zip.generateAsync({ type: "blob", compression: "DEFLATE" });
 
     // Trigger download
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    const ts = new Date().toISOString().slice(0, 10);
-    a.download = `workflowy-obsidian-${ts}.zip`;
+    a.download = downloadName;
     document.body.appendChild(a);
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(url), 10000);
 
-    setStatus(`✓ Export complete! ${attachKeys.length > 0 ? `(${attachKeys.length} attachment${attachKeys.length > 1 ? "s" : ""} included)` : ""}`, "success");
+    setStatus(`✓ Export complete!${attachKeys.length > 0 ? ` (${attachKeys.length} attachment${attachKeys.length > 1 ? "s" : ""} included)` : ""}`, "success");
     Logger.info("Export complete.");
   } catch (e) {
     Logger.error("Unexpected error: " + e.message);
@@ -730,22 +644,19 @@ async function runExport() {
 
 async function init() {
   // Restore saved settings
-  const saved = await chrome.storage.local.get(["splitStrategy", "skipCompleted", "downloadAttachments", "rootNodeId"]);
-  if (saved.splitStrategy)       splitStrategyEl.value       = saved.splitStrategy;
-  if (saved.skipCompleted != null)      skipCompletedEl.checked      = saved.skipCompleted;
-  if (saved.downloadAttachments != null) downloadAttachEl.checked    = saved.downloadAttachments;
-  if (saved.rootNodeId)          rootNodeIdEl.value           = saved.rootNodeId;
+  const saved = await chrome.storage.local.get(["skipCompleted", "downloadAttachments", "rootNodeId"]);
+  if (saved.skipCompleted != null)       skipCompletedEl.checked   = saved.skipCompleted;
+  if (saved.downloadAttachments != null) downloadAttachEl.checked  = saved.downloadAttachments;
+  if (saved.rootNodeId)                  rootNodeIdEl.value        = saved.rootNodeId;
 
   // Persist settings on change
   function saveSettings() {
     chrome.storage.local.set({
-      splitStrategy:       splitStrategyEl.value,
       skipCompleted:       skipCompletedEl.checked,
       downloadAttachments: downloadAttachEl.checked,
       rootNodeId:          rootNodeIdEl.value,
     });
   }
-  splitStrategyEl.addEventListener("change", saveSettings);
   skipCompletedEl.addEventListener("change", saveSettings);
   downloadAttachEl.addEventListener("change", saveSettings);
   rootNodeIdEl.addEventListener("input", saveSettings);
