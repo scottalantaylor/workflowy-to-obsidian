@@ -1,3 +1,3 @@
-Browser extension to download Workflowy nodes into markdown suitable for use with Obsidian. 
+Browser extension to download Workflowy nodes and inline images or files into markdown suitable for use with Obsidian. 
 
-<img width="364" height="331" alt="image" src="https://github.com/user-attachments/assets/665b4bc7-3d4e-4c2b-82db-10a2f44e8817" />
+<img width="358" height="154" alt="image" src="https://github.com/user-attachments/assets/d42ea4f3-a0f9-42a0-bff6-8be1dd9afa5a" />
