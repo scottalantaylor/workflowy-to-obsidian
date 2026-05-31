@@ -48,7 +48,7 @@ function shortHash(str) {
 /** Turn a Workflowy node name into a safe filename */
 function safeName(name, fallback = "Untitled") {
   const base = (name || fallback)
-    .replace(/<[^>]+>/g, "")
+    .replace(/[<>]/g, "")
     .replace(/\[([^\]]+)\]\(https?[^)]*\)/g, "$1")
     .replace(/\(https?[^)]*\)/gi, "")
     .replace(/\[[^\]]*\]/g, "")
