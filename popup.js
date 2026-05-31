@@ -46,23 +46,25 @@ function shortHash(str) {
   return Math.abs(h).toString(36).slice(0, 6);
 }
 
+/** Decode HTML character entities using the browser's built-in parser. */
+function decodeEntities(str) {
+  const ta = document.createElement("textarea");
+  ta.innerHTML = str;
+  return ta.value;
+}
+
 /** Turn a Workflowy node name into a safe filename. */
 function safeName(name, fallback = "Untitled") {
-  const base = (name || fallback)
-    .replace(/<[^>]+>/g, "")            // strip HTML tags
-    .replace(/&lt;/g, "<")             // decode entities — &amp; last to avoid double-decode
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&amp;/g, "&")
+  const decoded = decodeEntities((name || fallback).replace(/<[^>]+>/g, ""));
+  const base = decoded
     .replace(/\[([^\]]+)\]\(https?[^)]*\)/g, "$1")
     .replace(/\(https?[^)]*\)/gi, "")
     .replace(/\[[^\]]*\]/g, "")
     .replace(/#(\S+)/g, "$1")
     .replace(/🡒/g, " to ")
-    .replace(/=>/g, " to ")            // entities decoded above, so this covers all cases
+    .replace(/=>/g, " to ")
     .replace(/:/g, "-")
-    .replace(/[/\\*?"<>|#^[\]]/g, "")  // also strips any < or > left from entity decode
+    .replace(/[/\\*?"<>|#^[\]]/g, "")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 200);
@@ -72,30 +74,22 @@ function safeName(name, fallback = "Untitled") {
 /** Convert Workflowy inline HTML to Markdown. */
 function wfHtmlToMd(html) {
   if (!html) return "";
-  return html
+  const stripped = html
     .replace(/<b>(.*?)<\/b>/gi, "**$1**")
     .replace(/<i>(.*?)<\/i>/gi, "*$1*")
     .replace(/<a href="(.*?)"[^>]*>(.*?)<\/a>/gi, "[$2]($1)")
     .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&lt;/g, "<")             // decode named entities — &amp; last to avoid double-decode
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&amp;/g, "&");
+    .replace(/<[^>]+>/g, "");
+  return decodeEntities(stripped);
 }
 
 /** Strip all HTML tags and decode entities (used for code/quote blocks). */
 function wfStripHtml(html) {
   if (!html) return "";
-  return html
+  const stripped = html
     .replace(/<br\s*\/?>/gi, "\n")
-    .replace(/<[^>]+>/g, "")
-    .replace(/&lt;/g, "<")             // decode named entities — &amp; last to avoid double-decode
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&amp;/g, "&");
+    .replace(/<[^>]+>/g, "");
+  return decodeEntities(stripped);
 }
 
 /** Returns true only if the tab's hostname is exactly workflowy.com or a subdomain. */
