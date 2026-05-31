@@ -147,6 +147,14 @@ button.secondary:not(:disabled):hover {
 
 .status-bar.hidden { display: none; }
 
+.warning {
+  margin-top: 10px;
+  font-size: 11px;
+  color: #a6adc8;
+  text-align: center;
+  line-height: 1.4;
+}
+
 .log-container {
   margin-top: 10px;
   max-height: 180px;
