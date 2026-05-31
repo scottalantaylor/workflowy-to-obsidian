@@ -2,7 +2,7 @@
 
 A Chrome extension that exports the currently active Workflowy node to an Obsidian-ready Markdown file, including downloaded image attachments.
 
-<img width="358" height="154" alt="Extension popup" src="https://github.com/user-attachments/assets/d42ea4f3-a0f9-42a0-bff6-8be1dd9afa5a" />
+<img width="356" height="191" alt="image" src="https://github.com/user-attachments/assets/81c0f58e-7c21-430a-b7c8-70e35079dc18" />
 
 ## What it does
 
