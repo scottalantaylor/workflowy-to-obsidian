@@ -4,8 +4,6 @@ A Chrome extension that exports the currently active Workflowy node to an Obsidi
 
 <img width="358" height="154" alt="Extension popup" src="https://github.com/user-attachments/assets/d42ea4f3-a0f9-42a0-bff6-8be1dd9afa5a" />
 
----
-
 ## What it does
 
 When you click **Export to ZIP**, the extension:
@@ -15,8 +13,6 @@ When you click **Export to ZIP**, the extension:
 3. Optionally downloads image attachments found in the outline and packages everything into a ZIP file ready to drop into your Obsidian vault
 
 The exported Markdown file uses Obsidian's `![[attachments/filename]]` embed syntax for images, so attachments display inline once the ZIP is extracted into your vault.
-
----
 
 ## Requirements and limitations
 
@@ -31,8 +27,6 @@ The extension can only export content that is **visible in the Workflowy outline
 
 The **Download attachments** option retrieves image files embedded in the outline (JPEG, PNG, GIF, WebP, etc.). Other file types attached to Workflowy nodes — PDFs, spreadsheets, email files, and so on — are referenced in the Markdown as `![[attachments/filename]]` placeholders but are **not downloaded**.
 
----
-
 ## Installation
 
 The extension is not on the Chrome Web Store. Load it manually:
@@ -42,8 +36,6 @@ The extension is not on the Chrome Web Store. Load it manually:
 3. Enable **Developer mode** (toggle in the top-right corner)
 4. Click **Load unpacked** and select the `browser-extension` folder
 5. The Workflowy → Obsidian icon will appear in your toolbar
-
----
 
 ## Usage
 
@@ -59,20 +51,16 @@ The extension scrolls through the outline to collect fresh image proxy URLs, the
 
 **If there are no attachments:** a plain `.md` file is downloaded.
 
----
-
 ## Markdown conversion reference
 
-| Workflowy                  | Obsidian Markdown               |
-|----------------------------|---------------------------------|
-| Node name                  | `# Heading` (root) or `- bullet` |
-| Node note                  | `> blockquote` beneath the bullet |
+| Workflowy                  | Obsidian Markdown                       |
+|----------------------------|-----------------------------------------|
+| Node name                  | `# Heading` (root) or `- bullet`        |
+| Node note                  | `> blockquote` beneath the bullet       |
 | Bold / italic / links      | `**bold**` / `*italic*` / `[text](url)` |
-| Quote-block layout         | `> quoted text`                 |
-| Code-block layout          | ` ```fenced code``` `           |
-| Image attachment           | `![[attachments/filename_id.ext]]` |
-
----
+| Quote-block layout         | `> quoted text`                         |
+| Code-block layout          | ` ```fenced code``` `                   |
+| Image attachment           | `![[attachments/filename_id.ext]]`      |
 
 ## Permissions
 
