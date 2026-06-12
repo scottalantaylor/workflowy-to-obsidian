@@ -49,8 +49,8 @@ The extension is not on the Chrome Web Store. Load it manually:
 ## Markdown conversion reference
 
 | Workflowy                  | Obsidian Markdown                          |
-|----------------------------|--------------------------------------------|
-| Exported root node         | File name only (no heading inside the file) |
+|:---------------------------|:-------------------------------------------|
+| Exported root node         | File name only (no heading inside the file)|
 | First-level children       | `## H2 heading`                            |
 | Deeper children            | `- bullet` (indented per level)            |
 | Node note                  | `> blockquote` beneath its heading/bullet  |
@@ -62,7 +62,7 @@ The extension is not on the Chrome Web Store. Load it manually:
 ## Permissions
 
 | Permission      | Why it is needed |
-|-----------------|------------------|
+|:----------------|:-----------------|
 | `tabs`          | Read the active tab's URL to confirm you are on Workflowy and detect the current node |
 | `scripting`     | Inject minimal scripts into the Workflowy tab to call Workflowy's internal API using your existing session |
 | `storage`       | Remember your **Download attachments** preference between sessions |
